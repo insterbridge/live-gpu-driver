@@ -1,0 +1,6 @@
+This directory is intentionally empty — it is the mount payload mirror.
+Driver files go here (or into payload/ in the zip before install), e.g.:
+
+  system/vendor/lib64/hw/vulkan.adreno.so
+
+The engine skips .placeholder, *.md and *.txt files.

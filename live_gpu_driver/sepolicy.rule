@@ -1,0 +1,28 @@
+# live_gpu_driver — targeted SELinux rules
+#
+# Normal operation needs NO policy changes: the engine relabels payload
+# files to the stock vendor label (same_process_hal_file), which app
+# domains are already allowed to load — that's how the stock driver
+# works. Enforcement stays fully on.
+#
+# These rules are a FALLBACK for devices where chcon fails in the root
+# context (seen in the wild: label reads come back empty, relabelto is
+# denied). In that case the mounted driver files keep /data labels and
+# every app would get "no vulkan device". The rules below let app
+# processes read/execute/map exactly those label classes — nothing
+# else is relaxed. DAC permissions still apply (/data/adb stays
+# root-only traversable), so this does not expose anything apps could
+# not already path-reach through the module's own mounts.
+#
+# Loaded by KernelSU/APatch at boot or late-load. If you installed this
+# module after your root was already loaded, REBOOT once (then re-apply
+# the driver) for the rules to take effect.
+
+# app processes loading a driver file that kept a /data label
+allow appdomain same_process_hal_file file { read open getattr map execute execute_no_trans }
+allow appdomain adb_data_file file { read open getattr map execute execute_no_trans }
+allow appdomain system_data_file file { read open getattr map execute execute_no_trans }
+
+# traversing a staged merged dir whose label could not be fixed
+allow appdomain adb_data_file dir { search open getattr }
+allow appdomain system_data_file dir { search open getattr }

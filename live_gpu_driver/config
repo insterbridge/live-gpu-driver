@@ -1,0 +1,24 @@
+# live_gpu_driver configuration
+# Uncomment to change behaviour. Engine: bin/gpu_mount.sh
+
+# ------------------------- per-app mode ----------------------------------
+# Space-separated package list. When set, ONLY these apps get the custom
+# driver (mounted into each app process's own namespace as it starts);
+# everything else keeps the stock driver. A small background watcher
+# (bin/perapp.sh) catches app starts via logcat.
+# Empty/unset = global mode: driver mounted for init/zygote namespaces,
+# i.e. every app started afterwards.
+#PERAPP_PKGS="com.dolphinemu.dolphin org.ppsspp.ppsspp"
+
+# ------------------------- global-mode options ---------------------------
+
+# Also push the bind mounts into EVERY running mount namespace
+# (default: only init(1), zygote, zygote64, surfaceflinger — which covers
+#  every app started afterwards, since all apps fork from zygote).
+#ALL_NS=1
+
+# Restart surfaceflinger after mounting so the compositor reloads the
+# new GPU libs too (screen flickers for a second; system_server and
+# apps survive). Only useful if you want SF on the new driver NOW
+# instead of keeping the old one until next reboot.
+#RESTART_SF=1
