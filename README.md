@@ -12,7 +12,7 @@ Magisk).
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Driver .zip files (AdrenoToolsDrivers format)          │
+│  Driver .zip files (Adreno-Tools-Drivers format)          │
 │  dropped into /sdcard/Download                          │
 │                         │                               │
 │                         ▼                               │
@@ -35,7 +35,7 @@ and a reboot restores everything to stock. Rollback is one tap.
 
 ## Features
 
-- **Driver-zip management** — drop any [AdrenoToolsDrivers](https://github.com/K11MCH1/AdrenoToolsDrivers)
+- **Driver-zip management** — drop any [Adreno-Tools-Drivers](https://github.com/StevenMXZ/Adreno-Tools-Drivers)
   package (Turnip or Qualcomm) into `/sdcard/Download`, pick it from
   the WebUI. Swap drivers without reflashing.
 - **Global mode** — every app started after apply gets the custom driver
@@ -62,7 +62,7 @@ Install from KernelSU / APatch manager → Modules → Install from storage.
 ## Usage
 
 1. **Get a driver** — download from
-   [K11MCH1/AdrenoToolsDrivers](https://github.com/K11MCH1/AdrenoToolsDrivers/releases)
+   [Adreno-Tools-Drivers](https://github.com/StevenMXZ/Adreno-Tools-Drivers/releases)
    (Turnip or Qualcomm) and push to `/sdcard/Download/`
 2. **Open the WebUI** — manager → module → WebUI button
 3. **Tap "Use"** on the driver you want
@@ -85,12 +85,13 @@ tag.
 | Driver type | System-wide | Notes |
 |---|---|---|
 | Mesa Turnip | ✅ works | Best compatibility; targets stock kgsl across generations |
-| Qualcomm blob (same GPU generation) | ✅ works | e.g. Quest 3 blob (Adreno 740) on 8 Gen 2 devices |
-| Qualcomm blob (newer generation) | ⚠️ may fail | 8 Gen 3+ blobs on older kernels may need `hexlp` or fail at device enumeration |
-| Qualcomm blob (much newer, `not*`-only) | ❌ likely fails | adrenotools-patched packages expect in-process loading; system loader can't provide the GPU globals mapping they require |
+| Qualcomm blob (any generation) | ✅ works | Auto-fixes file permissions and SELinux labels; verified with Quest 3 (Adreno 740) and Ray-Ban Display (v863.1) `not*`-only packages on 8 Gen 2 |
+| Qualcomm blob (missing dependencies) | ⚠️ needs matching | Some packages ship without all required libs (e.g. `hexlp`); `doctor` reports unresolvable dependencies automatically |
 
-The WebUI and `doctor` report missing dependencies and label issues
-automatically.
+The engine auto-fixes the two issues that previously broke system-wide
+Qualcomm blob loading: restrictive file permissions (zip-stored `0600` →
+corrected to `0644`) and wrong SELinux labels (`vendor_file` →
+`same_process_hal_file`). Both are verified on-device.
 
 ## Per-app mode
 
@@ -128,7 +129,6 @@ test/run_webui_tests.sh    # WebUI backend + driver zips (60 assertions)
 All state files are written atomically; concurrent engine invocations
 are safe (regression-tested by polling status at 5 Hz during an async
 apply).
-
 ## Limitations
 
 - **Kernel-side GPU driver (kgsl/msm_drm) can't be swapped live** — the
@@ -139,10 +139,9 @@ apply).
   are copied at fork time).
 - **surfaceflinger** keeps the old driver until restart (`RESTART_SF=1`
   in config for immediate restart with a screen flicker).
-- **2024+ Qualcomm blobs with `not*`-only packages** generally can't be
-  system-loaded (they require the GPU globals memory mapping that
-  adrenotools patches in-process). Turnip or generation-matched blobs
-  work.
+- **Some Qualcomm packages ship incomplete dependency sets** (e.g. missing
+  `hexlp`). The dependency checker reports unresolvable libraries; use a
+  package that ships everything, or Turnip.
 
 ## License
 
