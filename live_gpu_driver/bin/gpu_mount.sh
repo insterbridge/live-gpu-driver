@@ -349,8 +349,8 @@ gm_relabel_payload() {
 
 # ------------------------------------------------------------ staging ------
 gm_build_staging() {
-  rm -rf "$STAGE" 2>/dev/null
   [ -s "$GM_SPLAN" ] || return 0
+  rm -rf "$STAGE" 2>/dev/null
   mkdir -p "$STAGE" || gm_die "cannot create $STAGE"
   while IFS= read -r gm_d; do
     [ -n "$gm_d" ] || continue
@@ -358,7 +358,7 @@ gm_build_staging() {
     mkdir -p "$gm_s"
     gm_log "staging merged dir for $gm_d (payload introduces new filenames)"
     if [ -d "${GM_ROOT}${gm_d}" ]; then
-      "$GM_CP" -a "${GM_ROOT}${gm_d}/." "$gm_s/" 2>>"$LOG" \
+      "$GM_CP" -af "${GM_ROOT}${gm_d}/." "$gm_s/" 2>>"$LOG" \
         || gm_warn "copying contents of $gm_d failed"
     fi
     # overlay payload files that belong to this dir
@@ -369,12 +369,7 @@ gm_build_staging() {
       "$GM_CP" -f "$gm_src" "$gm_s/$gm_sub" 2>>"$LOG" \
         || gm_warn "copying payload $gm_src failed"
     done < "$LIST"
-    # fix permissions + labels on ALL staged files:
-    # - chmod a+rX: zip-stored modes are often 0600 (root-only) which
-    #   makes apps' dlopen fail with "library not found" (THE bug that
-    #   broke every Qualcomm package system-wide)
-    # - chcon: new files get same_process_hal_file (the label apps need
-    #   to load GPU HAL libs); originals keep their stock labels
+    # fix permissions + labels on ALL staged files
     gm_dl=$(gm_label_of "${GM_ROOT}${gm_d}")
     if [ -n "$gm_dl" ] && [ -n "$GM_CHCON" ]; then
       "$GM_CHCON" "$gm_dl" "$gm_s" 2>/dev/null
@@ -394,6 +389,20 @@ gm_build_staging() {
       done
   done < "$GM_SPLAN"
   touch "$STAGE/.done" 2>/dev/null
+}
+
+# verify staging is complete: each staged dir must have at least as
+# many entries as the original vendor dir (a partial copy = corrupt)
+gm_staging_valid() {
+  while IFS= read -r gm_d; do
+    [ -n "$gm_d" ] || continue
+    gm_s="$STAGE$(echo "$gm_d" | sed 's|/|_|g')"
+    [ -d "$gm_s" ] || return 1
+    orig=$(ls "${GM_ROOT}${gm_d}" 2>/dev/null | wc -l)
+    staged=$(ls "$gm_s" 2>/dev/null | wc -l)
+    [ "$staged" -lt "$orig" ] && return 1
+  done < "$GM_SPLAN"
+  return 0
 }
 
 # Post-mount label fix: chcon through the MOUNTED path (which we've
@@ -674,7 +683,6 @@ gm_status() {
     [ -n "$gm_d" ] || continue
     echo "  (staged merged dir: $gm_d)"
   done < "$GM_SPLAN"
-  echo "== target namespaces =="
   echo "  $GM_NS_COUNT: $GM_NS_PIDS"
 }
 
@@ -702,9 +710,7 @@ case "$CMD" in
     gm_log "--- mount: $GM_COUNT payload file(s) ---"
     gm_prepare_plan
     gm_relabel_payload
-    # rebuild staging only when the plan is new or staging is missing —
-    # staging a merged dir can mean copying a LARGE vendor dir, and it
-    # persists on /data across reboots (mounts do not)
+    # rebuild staging only when the plan is new or staging is missing
     if [ "$GM_SAVED" != "1" ] || { [ -s "$GM_SPLAN" ] && [ ! -f "$STAGE/.done" ]; }; then
       gm_build_staging
     fi

@@ -1,6 +1,6 @@
 id=live_gpu_driver
 name=Live GPU Driver Mount (late-root friendly)
-version=v1.1.0
-versionCode=2
+version=v1.2.0
+versionCode=3
 author=live_gpu_driver
 description=Runtime GPU driver replacement via bind mounts into init/zygote or per-app mount namespaces. No OverlayFS needed — works with LATE-LOADED KernelSU. Driver zips (AdrenoToolsDrivers format) loaded from /sdcard/Download via the WebUI. After reboot: WebUI or Action button to re-apply.

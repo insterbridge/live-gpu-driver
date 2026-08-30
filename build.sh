@@ -2,7 +2,7 @@
 # build.sh — pack the module into a manager-flashable zip
 set -e
 cd "$(dirname "$0")"
-OUT="${OUT:-live_gpu_driver-v1.1.0.zip}"
+OUT="${OUT:-live_gpu_driver-v1.2.0.zip}"
 
 if command -v zip >/dev/null 2>&1; then
   ( cd live_gpu_driver && zip -r9 -q "../$OUT" . \
