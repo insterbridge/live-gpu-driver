@@ -18,13 +18,10 @@
 #   * mounts are applied INSIDE the mount namespaces of init (pid 1),
 #     zygote/zygote64 and surfaceflinger, so every process forked
 #     afterwards (all apps fork from zygote) resolves the new files.
-#     With --all, mounts are also pushed into every running namespace.
 #   * SELinux labels are cloned from the original files so app
 #     processes keep permission to map/execute the replacement
 #
 # Subcommands: mount | unmount | status | plan     (default: mount)
-# Option:       --all   enter every running mount namespace, not just
-#                      init/zygote/surfaceflinger
 #
 # Testing overrides (not needed on a real device):
 #   GM_ROOT       prefix for all real paths (default "")
@@ -44,7 +41,6 @@ GM_MARKER=${GM_MARKER:-$MODID}
 GM_QUIET=${GM_QUIET:-0}
 
 # defaults; $MODDIR/config may override
-ALL_NS=0
 RESTART_SF=0
 CFG="$MODDIR/config"
 [ -f "$CFG" ] && . "$CFG"
@@ -60,7 +56,6 @@ for gm_arg in "$@"; do
   fi
   case "$gm_arg" in
     mount|unmount|status|plan|ns|selftest) CMD=$gm_arg; gm_prev=$gm_arg ;;
-    --all) ALL_NS=1 ;;
   esac
 done
 
@@ -462,11 +457,6 @@ gm_collect_ns() {
       fi
       gm_pids="$gm_pids $gm_pp"
     done
-    if [ "$ALL_NS" = "1" ]; then
-      for gm_pd in /proc/[0-9]*; do
-        gm_pids="$gm_pids ${gm_pd#/proc/}"
-      done
-    fi
   fi
   gm_seen=""; GM_NS_PIDS=""; GM_NS_COUNT=0
   for gm_p in $gm_pids; do
@@ -557,7 +547,7 @@ gm_unmount() {
     : > "$gm_rtmp"
   fi
   mv -f "$gm_rtmp" "$gm_rev"
-  # sweep every namespace (we may have mounted with --all earlier)
+  # sweep every namespace (mounts may have landed in any of them)
   if [ -n "$GM_TEST_PIDS" ]; then
     gm_sweep="$GM_TEST_PIDS $$"
   else
@@ -703,14 +693,13 @@ gm_print_plan() {
     echo "  stage dir:  $gm_d (merged copy, bind-mounted over original)"
   done < "$GM_SPLAN"
   echo "== would apply in namespaces of: 1, zygote64, zygote, surfaceflinger"
-  [ "$ALL_NS" = "1" ] && echo "   + every running namespace (--all)"
 }
 
 # ---------------------------------------------------------------- main -----
 case "$CMD" in
   mount)
     [ "$GM_COUNT" -gt 0 ] || gm_die "no payload files under $MODDIR/system — add your driver first (see README.md)"
-    gm_log "--- mount: $GM_COUNT payload file(s), ALL_NS=$ALL_NS ---"
+    gm_log "--- mount: $GM_COUNT payload file(s) ---"
     gm_prepare_plan
     gm_relabel_payload
     # rebuild staging only when the plan is new or staging is missing —

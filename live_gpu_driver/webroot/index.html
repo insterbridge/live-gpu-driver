@@ -57,6 +57,16 @@ button.act.busy{opacity:.45;pointer-events:none;position:relative}
 button.act.busy::after{content:'';width:14px;height:14px;border:2px solid var(--line);
   border-top-color:var(--acc);border-radius:50%;animation:r .7s linear infinite;
   position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
+
+/* toggle switch */
+.switch{position:relative;width:46px;height:26px;flex:none}
+.switch input{opacity:0;width:0;height:0}
+.switch .slider{position:absolute;cursor:pointer;inset:0;background:var(--card2);
+  border:1px solid var(--line);border-radius:26px;transition:.2s}
+.switch .slider::before{content:'';position:absolute;height:20px;width:20px;
+  left:2px;top:2px;background:var(--dim);border-radius:50%;transition:.2s}
+.switch input:checked + .slider{background:var(--acc);border-color:var(--acc)}
+.switch input:checked + .slider::before{transform:translateX(20px);background:#fff}
 /* pkg chips */
 .pkglist{display:flex;flex-direction:column;gap:8px;margin-top:10px}
 .pkg{display:flex;align-items:center;gap:10px;background:var(--card2);
@@ -155,6 +165,21 @@ pre.log{background:var(--card2);border:1px solid var(--line);border-radius:10px;
     <div class="btns">
       <button class="act" id="applybtn" onclick="doApply()">Apply now</button>
       <button class="act sec" onclick="refresh(true)">Refresh</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Settings</h2>
+    <div class="row">
+      <span style="flex:1">
+        <b>Restart surfaceflinger</b><br>
+        <span class="muted" style="font-size:12px">Compositor reloads the new
+        driver immediately (screen flickers once)</span>
+      </span>
+      <label class="switch">
+        <input type="checkbox" id="cfg_rsf" onchange="toggleCfg('RESTART_SF', this.checked)">
+        <span class="slider"></span>
+      </label>
     </div>
   </div>
 
@@ -290,7 +315,9 @@ function render(){
   document.getElementById('modenote').textContent = st.mode==='perapp'
     ? 'Only the listed apps get the custom driver — everything else stays stock.'
     : 'Every app started from now on gets the custom driver (init/zygote namespaces).'
-      +' Adding an app below switches to per-app mode.';
+  // settings toggles (avoid re-triggering onchange)
+  const rsfEl = document.getElementById('cfg_rsf');
+  if(rsfEl && rsfEl.checked !== !!st.restart_sf) rsfEl.checked = !!st.restart_sf;
   // badges
   badge('watchbadge', st.watcher_running, 'running', 'stopped');
   badge('gbadge', st.global_active, 'active', 'inactive');
@@ -429,6 +456,21 @@ async function drvSelect(i){
   setTimeout(()=>pollNote.remove(), 5000);
   await refresh();
   loadDrivers();
+}
+
+async function toggleCfg(key, checked){
+  const v = checked ? 1 : 0;
+  const r = await ctl("config-set "+key+" "+v, {quiet:true});
+  if(r.errno !== 0){
+    toast('failed: '+(r.stderr.trim()||r.errno));
+    // revert toggle on failure
+    const el = document.getElementById('cfg_rsf');
+    if(el) el.checked = !checked;
+    return;
+  }
+  toast(key + ' ' + (v ? 'on' : 'off')
+    + (key === 'RESTART_SF' && v ? ' — takes effect on next Apply' : ''));
+  await refresh();
 }
 async function driverClear(){
   if(!confirm('Remove the custom driver and go back to stock?')) return;

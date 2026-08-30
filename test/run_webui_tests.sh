@@ -296,7 +296,7 @@ else
   check "doctor staged sanity OK" "yes" "no"
 fi
 # clear -> stock
-sh "$CTL" driver-clear >/dev/null
+sh "$CTL" driver-clear >/dev/null 2>&1 || true
 sh "$CTL" status > "$T/s8.json"
 check "clear drops driver" "" "$(jget "$T/s8.json" "d['driver']")"
 check "clear unmounts" "False" "$(jget "$T/s8.json" "d['global_active']")"
@@ -326,7 +326,39 @@ check "ebusy: new driver served" "FAKE-TURNIP-ELF" "$(nsenter -t "$ZYG" -m -- ca
 kill "$HOLDER" 2>/dev/null || true
 sh "$CTL" driver-clear >/dev/null
 
-echo "== log base64 =="
+echo "== config: get/set toggles =="
+sh "$CTL" config-get > "$T/cfg1.json"
+check "config-get JSON valid" "ok" "$(python3 -c "import json; d=json.load(open('$T/cfg1.json')); assert d['RESTART_SF']==0; print('ok')")"
+sh "$CTL" config-set RESTART_SF 1 > /dev/null
+check "config-set RESTART_SF=1" "1" "$(grep -c '^RESTART_SF=1' "$MOD/config" || true)"
+sh "$CTL" config-get > "$T/cfg2.json"
+check "config-get reflects change" "1" "$(jget "$T/cfg2.json" "d['RESTART_SF']")"
+# status also reports it
+sh "$CTL" status > "$T/s9.json"
+check "status reports restart_sf" "1" "$(jget "$T/s9.json" "d['restart_sf']")"
+sh "$CTL" config-set RESTART_SF 0 > /dev/null
+check "config-set back to 0" "0" "$(grep -c '^RESTART_SF=1' "$MOD/config" || true)"
+if sh "$CTL" config-set ALL_NS 1 >/dev/null 2>&1; then
+  check "ALL_NS removed: set rejected" "rejected" "accepted"
+else
+  check "ALL_NS removed: set rejected" "rejected" "rejected"
+fi
+# invalid key and value rejected
+if sh "$CTL" config-set INVALID_KEY 1 >/dev/null 2>&1; then
+  check "invalid key rejected" "rejected" "accepted"
+else
+  check "invalid key rejected" "rejected" "rejected"
+fi
+if sh "$CTL" config-set RESTART_SF 2 >/dev/null 2>&1; then
+  check "invalid value rejected" "rejected" "accepted"
+else
+  check "invalid value rejected" "rejected" "rejected"
+fi
+if sh "$CTL" config-set "RESTART_SF;rm -rf /" 1 >/dev/null 2>&1; then
+  check "injection in key rejected" "rejected" "accepted"
+else
+  check "injection in key rejected" "rejected" "rejected"
+fi
 sh "$CTL" stop-watcher >/dev/null
 echo
 if [ "$fails" = "0" ]; then echo "ALL WEBUI-BACKEND TESTS PASSED"

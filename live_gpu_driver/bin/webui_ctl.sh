@@ -131,7 +131,9 @@ ctl_status() {
   [ -f "$MODDIR/.deps_report" ] && deps=$(cat "$MODDIR/.deps_report" | tr '\n' ',' | sed 's/,$//')
   n=0
   [ -f "$LIST" ] && n=$(grep -c . "$LIST" 2>/dev/null)
-  echo "{\"mode\":\"$mode\",\"version\":\"$ver\",\"driver\":\"$drv\",\"missing_deps\":\"$deps\",\"watcher_running\":$wr,\"watcher_pid\":$wpid,\"global_active\":$ga,\"late_load\":\"$late\",\"payload_count\":$n,\"payload\":$(ctl_payload_json),\"pkgs\":[$(for p in $pkgs; do printf '"%s",' "$p"; done | sed 's/,$//')],\"targets\":$(ctl_targets_json)}"
+  rsf=0
+  [ -f "$CFG" ] && { grep -q "^[[:space:]]*RESTART_SF=1" "$CFG" 2>/dev/null && rsf=1; }
+  echo "{\"mode\":\"$mode\",\"version\":\"$ver\",\"driver\":\"$drv\",\"missing_deps\":\"$deps\",\"watcher_running\":$wr,\"watcher_pid\":$wpid,\"global_active\":$ga,\"late_load\":\"$late\",\"restart_sf\":$rsf,\"payload_count\":$n,\"payload\":$(ctl_payload_json),\"pkgs\":[$(for p in $pkgs; do printf '"%s",' "$p"; done | sed 's/,$//')],\"targets\":$(ctl_targets_json)}"
 }
 
 # --------------------------------------------------------------- set-pkgs ---
@@ -165,6 +167,41 @@ ctl_set_pkgs() {
   fi
   if [ -n "$new" ]; then echo "{\"ok\":true,\"pkgs\":\"$new\"}"
   else echo '{"ok":true,"pkgs":""}'; fi
+}
+
+# --------------------------------------------------------------- config ----
+# Supported toggles (booleans: 0/1). Anything else in config is preserved.
+CTL_BOOL_KEYS="RESTART_SF"
+
+ctl_config_get() { # JSON of current settings
+  out=""
+  [ -f "$CFG" ] || CFG=""
+  for k in $CTL_BOOL_KEYS; do
+    v=0
+    if [ -n "$CFG" ]; then
+      cv=$(grep "^[[:space:]]*$k=" "$CFG" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '"' | tr -d "'" | tr -d ' ')
+      [ "$cv" = "1" ] && v=1
+    fi
+    [ -n "$out" ] && out="$out,"
+    out="$out\"$k\":$v"
+  done
+  echo "{$out}"
+}
+
+ctl_config_set() { # $1=key $2=value — validated, atomic rewrite
+  k=$1; v=$2
+  # whitelist
+  ok=0
+  for kk in $CTL_BOOL_KEYS; do [ "$k" = "$kk" ] && ok=1; done
+  [ "$ok" = "1" ] || pa_die "unknown setting: $k"
+  case "$v" in 0|1) ;; *) pa_die "value must be 0 or 1" ;; esac
+  tmp="$MODDIR/.config.tmp.$$"
+  {
+    [ -f "$CFG" ] && grep -v "^[[:space:]]*$k=" "$CFG" || true
+    [ "$v" = "1" ] && echo "$k=1" || true
+  } > "$tmp" || pa_die "cannot write config"
+  mv "$tmp" "$CFG"
+  echo "{\"ok\":true,\"$k\":$v}"
 }
 
 # --------------------------------------------------------------- drivers ---
@@ -542,10 +579,31 @@ ctl_doctor() { # print a diagnostic report of the whole chain; $2 = app pid to i
 }
 
 ctl_driver_clear() { # back to stock: empty payload, drop mounts
-  GM_QUIET=1 sh "$MODDIR/bin/gpu_mount.sh" unmount >/dev/null 2>&1
-  rm -rf "$MODDIR/system" "$MODDIR/.drivercache" "$MODDIR/.staging"
-  mkdir -p "$MODDIR/system"
-  rm -f "$SELFILE" "$MODDIR/.saved.list" "$MODDIR/.saved.mlist"
+  # kill any pending background apply first — otherwise it would
+  # remount the driver right after we clear it (race when
+  # driver-select is immediately followed by driver-clear)
+  pkill -f "$MODDIR/bin/autostart" 2>/dev/null
+  pkill -f "$MODDIR/bin/gpu_mount.sh mount" 2>/dev/null
+  pkill -f "$MODDIR/bin/webui_ctl.sh deps-report" 2>/dev/null
+  pkill -f "$MODDIR/.drivercache" 2>/dev/null
+  sleep 0.5
+  # clear: sometimes the background job isn't fully dead yet — retry
+  # up to 3 times until the driver sel file is actually gone
+  i=0
+  while [ $i -lt 3 ]; do
+    GM_QUIET=1 sh "$MODDIR/bin/gpu_mount.sh" unmount >/dev/null 2>&1
+    rm -rf "$MODDIR/system" "$MODDIR/.drivercache" "$MODDIR/.staging" 2>/dev/null
+    mkdir -p "$MODDIR/system"
+    rm -f "$SELFILE" "$MODDIR/.saved.list" "$MODDIR/.saved.mlist" "$MODDIR/.deps_report" 2>/dev/null
+    # check: is the selection marker gone and system empty?
+    if [ ! -f "$SELFILE" ] && [ ! -f "$MODDIR/system/vendor/lib64/hw/vulkan.adreno.so" ]; then
+      break
+    fi
+    pkill -f "$MODDIR/bin/autostart" 2>/dev/null
+    pkill -f "$MODDIR/bin/gpu_mount.sh" 2>/dev/null
+    sleep 0.5
+    i=$((i+1))
+  done
   echo '{"ok":true}'
 }
 
@@ -554,6 +612,8 @@ case "${1:-}" in
   drivers)      ctl_drivers_list ;;
   doctor)       ctl_doctor "${2:-}" ;;
   deps-report)  ctl_deps_report ;;
+  config-get)    ctl_config_get ;;
+  config-set)    [ -n "${2:-}" ] && [ -n "${3:-}" ] || pa_die "usage: config-set <key> <0|1>"; ctl_config_set "$2" "$3" ;;
   driver-select) [ -n "${2:-}" ] || pa_die "usage: driver-select <zip>"; ctl_driver_select "$2" ;;
   driver-clear) ctl_driver_clear ;;
   set-pkgs)     [ -n "${2:-}" ] || pa_die "usage: set-pkgs <list|->"; ctl_set_pkgs "$2" ;;

@@ -12,11 +12,6 @@
 
 # ------------------------- global-mode options ---------------------------
 
-# Also push the bind mounts into EVERY running mount namespace
-# (default: only init(1), zygote, zygote64, surfaceflinger — which covers
-#  every app started afterwards, since all apps fork from zygote).
-#ALL_NS=1
-
 # Restart surfaceflinger after mounting so the compositor reloads the
 # new GPU libs too (screen flickers for a second; system_server and
 # apps survive). Only useful if you want SF on the new driver NOW
