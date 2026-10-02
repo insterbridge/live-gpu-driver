@@ -22,7 +22,7 @@ webroot/index.html  →  ksu.exec bridge  →  bin/webui_ctl.sh
 
 ## Engine (`bin/gpu_mount.sh`)
 
-Subcommands: `mount | unmount | status | plan | ns <pid> | selftest`
+Subcommands: `mount | unmount | status | plan | ns <pid> | selftest | stage-clean`
 
 **Mount flow:**
 1. Build payload list from `system/` mirror
@@ -44,7 +44,17 @@ Subcommands: `mount | unmount | status | plan | ns <pid> | selftest`
    processes hold the file mapped
 3. Self-healing sweep: remove ANY mount carrying the module marker,
    even ones the plan doesn't know about
-4. Delete staging
+4. Delete staging — **refused while any of it is still a live mount
+   source** (`gm_stage_clean` checks init/zygote mountinfo). Deleting
+   the source of an active bind mount empties the mounted directory;
+   vendor HALs then SIGSEGV on dlopen and the system soft-reboots.
+   `driver-select` therefore never deletes staging synchronously —
+   only the engine does, after the mounts are detached.
+
+**Never `rm -rf` the module dir or `.staging*` while a driver is
+active.** Use `driver-clear` / `action.sh unmount`, or reboot (mounts
+are in-memory, so a reboot detaches them and staging is then free to
+delete).
 
 **Concurrency:** all state files written atomically (unique tmp name +
 `mv`). Multiple engine invocations can run simultaneously.
@@ -67,7 +77,14 @@ Input: any AdrenoToolsDrivers-format zip (root-level `.so` files +
    - Every existing `vulkan.*.so` in vendor/odm lib dirs
 4. Map support libs (`libgsl`, `libadreno_utils`, `libllvm-*`, `not*`)
    to `/vendor/lib64/` — new filenames only when referenced (DT_NEEDED
-   grep) to avoid unnecessary dir staging
+   grep) to avoid unnecessary dir staging.
+   **New filenames go to `/vendor/lib64/egl/`** (also in the linker's
+   sphal search path): a new name in `/vendor/lib64` itself would force
+   the engine to stage a merged copy of that whole dir — ~1 GB on
+   Adreno devices. Files that *replace* a stock lib keep their exact
+   path (per-file bind, no staging). If `/vendor/lib64/egl` doesn't
+   exist on the device, the engine falls back to `/vendor/lib64`
+   staging (correct, just expensive) and logs the cost.
 5. Map EGL/GLES set over every existing `egl/libEGL_*` entry
    (vendor-tag agnostic)
 6. Launch background job: unmount old → dependency report → apply

@@ -58,7 +58,7 @@ ctl_driver_src() { # -> source file the engine serves for payload entry $1
   while IFS='|' read -r s d k; do
     [ "$k" = "dir" ] || continue
     case "$gm_dst" in "$d"/*)
-      echo "$STAGE$(echo "$d" | sed 's|/|_|g')/${gm_dst#"$d"/}"
+      echo "$STAGE/dir$(echo "$d" | sed 's|/|_|g')/${gm_dst#"$d"/}"
       return ;;
     esac
   done < "$MLIST"
@@ -305,7 +305,13 @@ ctl_driver_select() { # $1 = zip path (must live inside a scan dir)
   done
   [ "$ok" = "1" ] || pa_die "path not allowed (must be a .zip inside: $(echo $GM_DRIVER_DIRS))"
   cache="$MODDIR/.drivercache"
-  rm -rf "$cache" "$MODDIR/.staging"
+  # NOTE: staging is NOT deleted here. It may still be the live mount
+  # source for /vendor/lib64 in init/zygote namespaces — deleting it now
+  # would empty the mounted dir and crash vendor HALs that dlopen from
+  # it (SIGSEGV in display.allocator / media codecs -> soft reboot).
+  # The background job below unmounts first, and the engine's
+  # gm_unmount -> gm_stage_clean removes staging only after detach.
+  rm -rf "$cache"
   mkdir -p "$cache" || pa_die "cannot create cache"
   ctl_uzx "$z" "$cache" || pa_die "cannot extract zip"
   # locate the vulkan driver library: meta.json's libraryName, else the
@@ -368,8 +374,19 @@ ctl_driver_select() { # $1 = zip path (must live inside a scan dir)
           done
         fi
         if [ "$keep" = "1" ]; then
-          mkdir -p "$sys/vendor/lib64"
-          cp -f "$f" "$sys/vendor/lib64/$b"
+          # a NEW filename in /vendor/lib64 forces the engine to stage a
+          # merged copy of that whole dir (1 GB on many devices!). The
+          # linker's sphal namespace searches /vendor/lib64/egl too, so
+          # new names go there instead — staging /vendor/lib64/egl is
+          # ~20x smaller and resolution is identical. Files that REPLACE
+          # a stock lib must keep their path (bind over the original).
+          if [ ! -f "${GM_ROOT}/vendor/lib64/$b" ] && [ -d "${GM_ROOT}/vendor/lib64/egl" ]; then
+            mkdir -p "$sys/vendor/lib64/egl"
+            cp -f "$f" "$sys/vendor/lib64/egl/$b"
+          else
+            mkdir -p "$sys/vendor/lib64"
+            cp -f "$f" "$sys/vendor/lib64/$b"
+          fi
         fi
         ;;
     esac
@@ -548,14 +565,16 @@ ctl_doctor() { # print a diagnostic report of the whole chain; $2 = app pid to i
   if [ -f "$MODDIR/.saved.mlist" ]; then
     while IFS='|' read -r s d k; do
       [ "$k" = "dir" ] || continue
-      stage="$MODDIR/.staging$(echo "$d" | sed 's|/|_|g')"
+      stage="$STAGE/dir$(echo "$d" | sed 's|/|_|g')"
       orig=$(ls "${GM_ROOT}$d" 2>/dev/null | wc -l)
       stag=$(ls "$stage" 2>/dev/null | wc -l)
       if [ "$stag" -lt "$orig" ]; then
         echo "  WARNING: staged $d has $stag entries, vendor has $orig —"
         echo "  staging copy is INCOMPLETE; re-select the driver"
       else
-        echo "  $d: staged $stag entries (vendor $orig) OK"
+        sz=""
+        command -v du >/dev/null 2>&1 && sz=$(du -sh "$stage" 2>/dev/null | awk '{print $1}')
+        echo "  $d: staged $stag entries (vendor $orig) OK${sz:+ [$sz]}"
       fi
     done < "$MODDIR/.saved.mlist"
   else
@@ -592,7 +611,10 @@ ctl_driver_clear() { # back to stock: empty payload, drop mounts
   i=0
   while [ $i -lt 3 ]; do
     GM_QUIET=1 sh "$MODDIR/bin/gpu_mount.sh" unmount >/dev/null 2>&1
-    rm -rf "$MODDIR/system" "$MODDIR/.drivercache" "$MODDIR/.staging" 2>/dev/null
+    # staging is removed by the engine's unmount (which refuses to delete
+    # it while still mounted — see gm_stage_clean). Never rm it here:
+    # it may still be the live mount source for /vendor/lib64.
+    rm -rf "$MODDIR/system" "$MODDIR/.drivercache" 2>/dev/null
     mkdir -p "$MODDIR/system"
     rm -f "$SELFILE" "$MODDIR/.saved.list" "$MODDIR/.saved.mlist" "$MODDIR/.deps_report" 2>/dev/null
     # check: is the selection marker gone and system empty?

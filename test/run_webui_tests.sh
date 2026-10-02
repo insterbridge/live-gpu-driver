@@ -36,7 +36,7 @@ echo ORIGINAL-VK > "$DEV/vendor/lib64/hw/vulkan.adreno.so"
 
 MOD="$T/live_gpu_driver"
 cp -a "$BASE/live_gpu_driver" "$MOD"
-rm -rf "$MOD/.staging" 2>/dev/null || true
+rm -rf "$MOD/.staging" "$MOD"/.staging_* 2>/dev/null || true
 rm -f "$MOD/engine.log" "$MOD"/.saved.* "$MOD"/.list "$MOD"/.plan.* \
       "$MOD"/.mlist "$MOD"/.want "$MOD"/.rev "$MOD"/.watcher.pid 2>/dev/null || true
 mkdir -p "$MOD/system/vendor/lib64/hw"
@@ -256,11 +256,21 @@ case "$pmode" in *4|*5|*6|*7) check "payload made world-readable (mode $pmode)" 
 check "qc libgsl mapped" "FAKE-QC-GSL needs vendor.qti.hardware.hexlp-V2-ndk.so" "$(cat "$MOD/system/vendor/lib64/libgsl.so")"
 check "ICD path serves qc driver (via zygote ns)" "FAKE-QC-VK DT_NEEDED:notgsl.so libmissing_dep.so" \
   "$(nsenter -t "$ZYG" -m -- cat "$DEV/vendor/lib64/libvulkan_adreno.so" 2>/dev/null)"
-check "qc hexlp mapped" "FAKE-QC-HEXLP" "$(cat "$MOD/system/vendor/lib64/vendor.qti.hardware.hexlp-V2-ndk.so")"
-check "not* adrenotools deps included (referenced)" "1" "$(ls "$MOD/system/vendor/lib64/" | grep -c '^not' || true)"
-check "unreferenced extra skipped" "0" "$(ls "$MOD/system/vendor/lib64/" | grep -c 'unreferenced' || true)"
+check "qc hexlp relocated to egl (new name)" "FAKE-QC-HEXLP" "$(cat "$MOD/system/vendor/lib64/egl/vendor.qti.hardware.hexlp-V2-ndk.so")"
+check "hexlp NOT in lib64 root (avoids 1GB staging)" "0" "$(ls "$MOD/system/vendor/lib64/" | grep -c 'hexlp' || true)"
+check "not* adrenotools deps relocated to egl" "1" "$(ls "$MOD/system/vendor/lib64/egl/" | grep -c '^not' || true)"
+check "notgsl content in egl" "ADRENOTOOLS-VARIANT" "$(cat "$MOD/system/vendor/lib64/egl/notgsl.so")"
+check "unreferenced extra skipped" "0" "$(ls "$MOD/system/vendor/lib64/" "$MOD/system/vendor/lib64/egl/" | grep -c 'unreferenced' || true)"
 check "egl auto-mapped over existing entry" "FAKE-QC-EGL" "$(cat "$MOD/system/vendor/lib64/egl/libEGL_qcom.so")"
 check "egl zip-named copy present" "FAKE-QC-EGL" "$(cat "$MOD/system/vendor/lib64/egl/libEGL_adreno.so")"
+# regression: relocated new-name libs must make the engine stage
+# /vendor/lib64/egl (small), NOT all of /vendor/lib64
+check "staged dir is egl, not lib64" "1" \
+  "$(awk -F'|' '$2=="/vendor/lib64/egl" && $3=="dir"' "$MOD/.saved.mlist" | wc -l)"
+check "lib64 itself not staged" "0" \
+  "$(awk -F'|' '$2=="/vendor/lib64" && $3=="dir"' "$MOD/.saved.mlist" | wc -l)"
+check "notgsl served from egl in target ns" "ADRENOTOOLS-VARIANT" \
+  "$(nsenter -t "$ZYG" -m -- cat "$DEV/vendor/lib64/egl/notgsl.so" 2>/dev/null)"
 sh "$CTL" status > "$T/s7.json"
 check "driver swap still mounted" "True" "$(jget "$T/s7.json" "d['global_active']")"
 check "driver field updated" "$DRVDIR/qualcomm.zip" "$(jget "$T/s7.json" "d['driver']")"

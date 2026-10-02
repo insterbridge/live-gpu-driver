@@ -121,9 +121,9 @@ The test suites run on Linux in isolated user+mount namespaces (no
 device needed, host untouched):
 
 ```bash
-test/run_tests.sh          # global mode (30 assertions)
-test/run_perapp_tests.sh   # per-app watcher (21 assertions)
-test/run_webui_tests.sh    # WebUI backend + driver zips (60 assertions)
+test/run_tests.sh          # global mode (40 assertions)
+test/run_perapp_tests.sh   # per-app watcher (20 assertions)
+test/run_webui_tests.sh    # WebUI backend + driver zips (74 assertions)
 ```
 
 All state files are written atomically; concurrent engine invocations
@@ -135,6 +135,15 @@ apply).
   userspace blob must be compatible with your kernel's kgsl.
 - **Mounts are in-memory** — that's what makes rollback instant. Re-apply
   after each reboot.
+- **Staging cost**: a payload file with a *new* name in a directory
+  forces a merged copy of that whole directory. New names are therefore
+  placed in `/vendor/lib64/egl` (in the linker's sphal search path)
+  rather than `/vendor/lib64`, which keeps staging at ~43 MB instead of
+  ~1 GB. Replacing a stock lib needs no staging (per-file bind).
+  `doctor` reports the staged size; the engine warns above 256 MB.
+- **Never delete the module directory (or `.staging*`) while a driver is
+  active** — the mounts point at those files. Use `driver-clear`,
+  `action.sh unmount`, or reboot first.
 - **Running apps keep the old driver** until restarted (mount namespaces
   are copied at fork time).
 - **surfaceflinger** keeps the old driver until restart (`RESTART_SF=1`

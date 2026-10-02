@@ -32,7 +32,7 @@ echo ORIGINAL-AUDIO > "$DEV/vendor/lib64/hw/audio.primary.fake.so"
 MOD="$T/live_gpu_driver"
 cp -a "$BASE/live_gpu_driver" "$MOD"
 rm -f "$MOD/engine.log" "$MOD"/.list "$MOD"/.plan.* "$MOD"/.mlist "$MOD"/.want "$MOD"/.rev 2>/dev/null || true
-rm -rf "$MOD/.staging" 2>/dev/null || true
+rm -rf "$MOD/.staging" "$MOD"/.staging_* 2>/dev/null || true
 
 # ---- payload: 2 replacements + 1 brand-new filename ---------------------
 mkdir -p "$MOD/system/vendor/lib64/hw" "$MOD/system/vendor/lib64/egl"
@@ -61,7 +61,7 @@ check() { # name expected actual
 }
 view() { nsenter -t "$ZYG" -m -- cat "$1" 2>/dev/null || echo "(missing)"; }
 mntcount() {
-  c=$(nsenter -t "$ZYG" -m -- grep -cF " $1 " /proc/self/mountinfo 2>/dev/null)
+  c=$(nsenter -t "$ZYG" -m -- grep -cF " $1 " /proc/self/mountinfo 2>/dev/null || true)
   echo "${c:-0}"
 }
 
@@ -80,6 +80,19 @@ check "replaced libEGL_adreno.so content"        "CUSTOM-EGL"     "$(view "$DEV/
 check "unrelated egl lib untouched (staged hw)"  "ORIGINAL-GLES2" "$(view "$DEV/vendor/lib64/egl/libGLESv2_adreno.so")"
 check "unrelated hw lib survives staged dir"     "ORIGINAL-AUDIO" "$(view "$DEV/vendor/lib64/hw/audio.primary.fake.so")"
 check "libCB untouched"                          "ORIGINAL-CB"    "$(view "$DEV/vendor/lib64/libCB.so")"
+
+echo "== assertions: staging lives INSIDE .staging (no /data leak) =="
+# regression: <= v1.2.0 staged dirs as $STAGE-prefixed SIBLINGS
+# (.staging_vendor_lib64_hw) which the cleanup paths never removed —
+# every staged vendor dir (up to ~1 GB) leaked into /data forever
+check "staged dir inside .staging/" "1" \
+  "$(ls -d "$MOD/.staging/dir_vendor_lib64_hw" 2>/dev/null | wc -l)"
+check "no legacy sibling staging dirs" "0" \
+  "$(ls -d "$MOD"/.staging_vendor* 2>/dev/null | wc -l)"
+sh "$ENGINE" unmount >/dev/null
+check "unmount removes staging tree" "0" \
+  "$(ls -d "$MOD"/.staging "$MOD"/.staging_* 2>/dev/null | wc -l)"
+sh "$ENGINE" mount >/dev/null
 
 echo "== assertions: vendor partition never written =="
 check "on-disk vendor file unmodified (pristine ns)" "ORIGINAL-VK" \
@@ -121,6 +134,44 @@ check "replanned: pristine vendor still intact" "ORIGINAL-VK" \
   "$(nsenter -t "$PRISTINE" -m -- cat "$DEV/vendor/lib64/hw/vulkan.adreno.so" 2>/dev/null || echo NOPE)"
 st2=$(sh "$ENGINE" status | grep -c "ACTIVE" || true)
 check "replanned: status reports 4 ACTIVE" "4" "$st2"
+
+echo "== engine: v1.2.0 legacy staging plan is rejected (upgrade path) =="
+# an upgraded install carries a saved plan whose staged dirs point at the
+# leaked legacy SIBLING form. Reusing it would rebind the leaked dir and
+# never rebuild under .staging/ — the plan must be rejected + rebuilt.
+mkdir -p "$MOD/.staging_vendor_lib64_hw"
+echo LEGACY > "$MOD/.staging_vendor_lib64_hw/legacy_marker.so"
+cp -f "$MOD/.list" "$MOD/.saved.list"
+printf '%s|%s|dir\n' "$MOD/.staging_vendor_lib64_hw" "/vendor/lib64/hw" > "$MOD/.saved.mlist"
+sh "$ENGINE" mount >/dev/null
+check "legacy sibling dir not used as mount source" "0" \
+  "$(nsenter -t "$ZYG" -m -- grep -cF "$MOD/.staging_vendor_lib64_hw" /proc/self/mountinfo 2>/dev/null || true)"
+check "plan rebuilt under .staging/" "1" \
+  "$(awk -F'|' -v s="$MOD/.staging/dir_vendor_lib64_hw" '$1==s && $3=="dir"' "$MOD/.saved.mlist" | wc -l)"
+check "driver served after rebuild"    "CUSTOM-VK"     "$(view "$DEV/vendor/lib64/hw/vulkan.adreno.so")"
+check "new file served after rebuild"  "CUSTOM-TURNIP" "$(view "$DEV/vendor/lib64/hw/vulkan.turnip.so")"
+check "leaked legacy dir deleted (frees /data)" "0" \
+  "$(ls -d "$MOD/.staging_vendor_lib64_hw" 2>/dev/null | wc -l)"
+
+echo "== engine: stage-clean REFUSES while staging is a live mount source =="
+# field regression: deleting staging while /vendor/lib64 is bind-mounted
+# from it empties the mounted dir; vendor HALs SIGSEGV on dlopen ->
+# system_server dies -> soft reboot. The guard must refuse, not delete.
+mkdir -p "$MOD/.staging/dir_vendor_lib64_hw"
+echo GUARDED > "$MOD/.staging/dir_vendor_lib64_hw/x.so"
+sh "$ENGINE" mount >/dev/null
+if GM_TEST_PIDS="$ZYG" sh "$ENGINE" stage-clean >/dev/null 2>&1; then
+  check "stage-clean refuses while mounted" "refused" "deleted anyway"
+else
+  check "stage-clean refuses while mounted" "refused" "refused"
+fi
+check "staging preserved while mounted" "1" \
+  "$(ls -d "$MOD/.staging/dir_vendor_lib64_hw" 2>/dev/null | wc -l)"
+sh "$ENGINE" unmount >/dev/null
+GM_TEST_PIDS="$ZYG" sh "$ENGINE" stage-clean >/dev/null 2>&1
+check "stage-clean deletes once unmounted" "0" \
+  "$(ls -d "$MOD/.staging" 2>/dev/null | wc -l)"
+sh "$ENGINE" mount >/dev/null
 
 echo "== engine: final unmount =="
 sh "$ENGINE" unmount >/dev/null

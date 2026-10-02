@@ -47,7 +47,7 @@ pa_probe() { # -> "src|dst"
   while IFS='|' read -r s d k; do
     [ "$k" = "dir" ] || continue
     case "$gm_dst" in "$d"/*)
-      gm_src="$STAGE$(echo "$d" | sed 's|/|_|g')/${gm_dst#"$d"/}"
+      gm_src="$STAGE/dir$(echo "$d" | sed 's|/|_|g')/${gm_dst#"$d"/}"
       break ;;
     esac
   done < "$MODDIR/.saved.mlist"

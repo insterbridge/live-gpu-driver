@@ -55,7 +55,7 @@ for gm_arg in "$@"; do
     continue
   fi
   case "$gm_arg" in
-    mount|unmount|status|plan|ns|selftest) CMD=$gm_arg; gm_prev=$gm_arg ;;
+    mount|unmount|status|plan|ns|selftest|stage-clean) CMD=$gm_arg; gm_prev=$gm_arg ;;
   esac
 done
 
@@ -98,6 +98,7 @@ GM_PIDOF=$(gm_which pidof)    || GM_PIDOF=""
 GM_PGREP=$(gm_which pgrep)    || GM_PGREP=""
 GM_MV=$(gm_which mv)          || gm_die "mv not found"
 GM_CMP=$(gm_which cmp)        || GM_CMP=""
+GM_DU=$(gm_which du)          || GM_DU=""
 
 if [ -z "$GM_NSENTER" ] && [ -z "$GM_BB" ]; then
   [ "$CMD" = plan ] || gm_die "no nsenter binary found (need toybox nsenter or busybox)"
@@ -204,7 +205,7 @@ gm_mount_list() {
   : > "$gm_mtmp"
   while IFS= read -r gm_d; do
     [ -n "$gm_d" ] || continue
-    echo "$STAGE$(echo "$gm_d" | sed 's|/|_|g')|$gm_d|dir" >> "$gm_mtmp"
+    echo "$STAGE/dir$(echo "$gm_d" | sed 's|/|_|g')|$gm_d|dir" >> "$gm_mtmp"
   done < "$GM_SPLAN"
   while IFS='|' read -r gm_src gm_dst; do
     [ -n "$gm_src" ] || continue
@@ -233,14 +234,28 @@ gm_state_load() { # reuse saved mlist; fills GM_SPLAN/GM_FPLAN/GM_MLIST
   [ -s "$MODDIR/.saved.mlist" ] || return 1
   gm_ftmp="$GM_FPLAN.tmp.$$"; gm_stmp="$GM_SPLAN.tmp.$$"
   : > "$gm_ftmp"; : > "$gm_stmp"
+  gm_bad=0
   while IFS='|' read -r gm_src gm_dst gm_kind; do
     [ -n "$gm_dst" ] || continue
     if [ "$gm_kind" = "dir" ]; then
+      # a staged dir is only reusable when it lives in the CURRENT
+      # staging tree: pre-v1.2.1 plans point at legacy SIBLING dirs
+      # (".staging_vendor_...") which would rebind the leaked copy.
+      # a missing dir_* subdir (killed build, partial copy) also
+      # invalidates the plan — never mount a half-copied vendor dir.
+      case "$gm_src" in
+        "$STAGE"/*) [ -d "$gm_src" ] || { gm_bad=1; break; } ;;
+        *) gm_bad=1; break ;;
+      esac
       echo "$gm_dst" >> "$gm_stmp"
     else
       echo "$gm_src|$gm_dst" >> "$gm_ftmp"
     fi
   done < "$MODDIR/.saved.mlist"
+  if [ "$gm_bad" = "1" ]; then
+    rm -f "$gm_ftmp" "$gm_stmp"
+    return 1
+  fi
   mv -f "$gm_ftmp" "$GM_FPLAN"
   mv -f "$gm_stmp" "$GM_SPLAN"
   GM_MLIST="$MODDIR/.saved.mlist"
@@ -348,13 +363,52 @@ gm_relabel_payload() {
 }
 
 # ------------------------------------------------------------ staging ------
+# Remove the staging tree. Also sweeps the legacy sibling form
+# ".staging_*" (<= v1.2.0 built staged dirs as $STAGE-prefixed SIBLINGS,
+# so the rm -rf "$STAGE" cleanups never matched them and every staged
+# vendor dir — up to ~1 GB — leaked into /data permanently).
+#
+# SAFETY: never delete a staging dir that is still a live mount source.
+# Deleting the source of an active bind mount empties the mounted dir
+# (vendor HALs then SIGSEGV on dlopen -> soft reboot). This happened in
+# the field; the guard below is why the order no longer matters.
+gm_stage_clean() {
+  # never delete a staging dir that is still a live mount source:
+  # deleting the source of an active bind mount empties the mounted dir
+  # (vendor HALs SIGSEGV on dlopen -> soft reboot). Field-verified.
+  if [ -n "$GM_TEST_PIDS" ]; then
+    gm_pids="$GM_TEST_PIDS"
+  else
+    gm_pids="1"
+    if [ -n "$GM_PIDOF" ]; then
+      gm_pids="$gm_pids $("$GM_PIDOF" zygote64 2>/dev/null) $("$GM_PIDOF" zygote 2>/dev/null)"
+    fi
+  fi
+  for gm_p in $gm_pids; do
+    [ -d "/proc/$gm_p" ] || continue
+    # mountinfo stores the mount ROOT relative to its own filesystem, so a
+    # bind from /data/adb/modules/<id>/.staging/... shows up as
+    # /adb/modules/<id>/.staging/... — the absolute $STAGE path never
+    # appears. Match on "<module-id>/.staging" instead, which is exactly
+    # how the self-heal sweep identifies our mounts (GM_MARKER).
+    if "$GM_GREP" -qF "$MODID/.staging" "/proc/$gm_p/mountinfo" 2>/dev/null; then
+      gm_warn "staging is still mounted (pid $gm_p) — NOT deleting it"
+      gm_warn "  (unmount first: deleting a live mount source crashes vendor HALs)"
+      return 1
+    fi
+  done
+  rm -rf "$STAGE" 2>/dev/null
+  rm -rf "$MODDIR"/.staging_* 2>/dev/null
+  return 0
+}
+
 gm_build_staging() {
   [ -s "$GM_SPLAN" ] || return 0
-  rm -rf "$STAGE" 2>/dev/null
+  gm_stage_clean
   mkdir -p "$STAGE" || gm_die "cannot create $STAGE"
   while IFS= read -r gm_d; do
     [ -n "$gm_d" ] || continue
-    gm_s="$STAGE$(echo "$gm_d" | sed 's|/|_|g')"
+    gm_s="$STAGE/dir$(echo "$gm_d" | sed 's|/|_|g')"
     mkdir -p "$gm_s"
     gm_log "staging merged dir for $gm_d (payload introduces new filenames)"
     if [ -d "${GM_ROOT}${gm_d}" ]; then
@@ -389,20 +443,25 @@ gm_build_staging() {
       done
   done < "$GM_SPLAN"
   touch "$STAGE/.done" 2>/dev/null
-}
-
-# verify staging is complete: each staged dir must have at least as
-# many entries as the original vendor dir (a partial copy = corrupt)
-gm_staging_valid() {
-  while IFS= read -r gm_d; do
-    [ -n "$gm_d" ] || continue
-    gm_s="$STAGE$(echo "$gm_d" | sed 's|/|_|g')"
-    [ -d "$gm_s" ] || return 1
-    orig=$(ls "${GM_ROOT}${gm_d}" 2>/dev/null | wc -l)
-    staged=$(ls "$gm_s" 2>/dev/null | wc -l)
-    [ "$staged" -lt "$orig" ] && return 1
-  done < "$GM_SPLAN"
-  return 0
+  # staging cost sanity: a NEW filename in a dir whose nearest existing
+  # ancestor is /vendor/lib64 stages the WHOLE dir (~1 GB on Adreno
+  # devices). That works but eats /data; warn loudly so it's diagnosable.
+  if [ -n "$GM_DU" ]; then
+    gm_kb=$("$GM_DU" -sk "$STAGE" 2>/dev/null | awk '{print $1}')
+    case "$gm_kb" in
+      ""|*[!0-9]*) ;;
+      *)
+        if [ "$gm_kb" -gt 262144 ]; then
+          gm_warn "staging uses $((gm_kb/1024)) MB of /data — the payload"
+          gm_warn "  adds new filenames to a large vendor dir. Re-select"
+          gm_warn "  the driver from the WebUI to place new libs in"
+          gm_warn "  /vendor/lib64/egl (much smaller staging)."
+        else
+          gm_log "staging size: $((gm_kb/1024)) MB"
+        fi
+        ;;
+    esac
+  fi
 }
 
 # Post-mount label fix: chcon through the MOUNTED path (which we've
@@ -620,7 +679,7 @@ gm_unmount() {
     [ "$gm_found" = "0" ] && break
     gm_pass=$((gm_pass+1))
   done
-  rm -rf "$STAGE" 2>/dev/null
+  gm_stage_clean
   gm_log "unmount finished — vendor filesystem was never modified"
 }
 
@@ -666,7 +725,7 @@ gm_status() {
       while IFS= read -r gm_d; do
         [ -n "$gm_d" ] || continue
         case "$gm_dst" in "$gm_d"/*)
-          gm_chk="$STAGE$(echo "$gm_d" | sed 's|/|_|g')/${gm_dst#"$gm_d"/}"
+          gm_chk="$STAGE/dir$(echo "$gm_d" | sed 's|/|_|g')/${gm_dst#"$gm_d"/}"
           break
           ;;
         esac
@@ -730,6 +789,12 @@ case "$CMD" in
       gm_mount_list
     fi
     gm_unmount
+    ;;
+  stage-clean)
+    # free staged copies — refuses while they are still a live mount
+    # source (see gm_stage_clean); exits nonzero if it refused
+    gm_stage_clean || exit 1
+    gm_log "staging cleaned"
     ;;
   status)
     gm_state_load || gm_build_plan

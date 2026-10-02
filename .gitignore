@@ -17,6 +17,7 @@ live_gpu_driver/.config.tmp*
 live_gpu_driver/.driver_sel*
 live_gpu_driver/.deps_report
 live_gpu_driver/.staging/
+live_gpu_driver/.staging_*/
 live_gpu_driver/.drivercache/
 live_gpu_driver/system/vendor/
 live_gpu_driver/payload/vendor/
